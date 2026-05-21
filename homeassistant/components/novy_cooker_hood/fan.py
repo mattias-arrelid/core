@@ -4,6 +4,7 @@ import asyncio
 import math
 from typing import Any
 
+from rf_protocols import RadioFrequencyCommand
 from rf_protocols.codes.novy.cooker_hood import get_codes_for_code
 
 from homeassistant.components.fan import ATTR_PERCENTAGE, FanEntity, FanEntityFeature
@@ -138,14 +139,16 @@ class NovyCookerHoodFan(NovyCookerHoodEntity, FanEntity, RestoreEntity):
         self._level = level
         self.async_write_ha_state()
 
-    async def _async_send_repeated(self, command: Any, count: int) -> None:
+    async def _async_send_repeated(
+        self, command: RadioFrequencyCommand, count: int
+    ) -> None:
         """Send the same RF command N times, pausing between presses."""
         for i in range(count):
             if i > 0:
                 await asyncio.sleep(_COMMAND_DELAY)
             await self._async_send(command)
 
-    async def _async_send(self, command: Any) -> None:
+    async def _async_send(self, command: RadioFrequencyCommand) -> None:
         """Send a single RF command via the configured transmitter."""
         await async_send_command(
             self.hass, self._transmitter, command, context=self._context
