@@ -1,6 +1,7 @@
 """Code to set up a device tracker platform using a config entry."""
 
 import asyncio
+import logging
 from typing import Any, final
 
 from propcache.api import cached_property
@@ -16,7 +17,13 @@ from homeassistant.const import (
     STATE_NOT_HOME,
     EntityCategory,
 )
-from homeassistant.core import Event, HomeAssistant, State, callback
+from homeassistant.core import (
+    Event,
+    HomeAssistant,
+    State,
+    async_get_hass_or_none,
+    callback,
+)
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.device_registry import (
     DeviceInfo,
@@ -27,6 +34,7 @@ from homeassistant.helpers.entity import Entity, EntityDescription
 from homeassistant.helpers.entity_component import EntityComponent
 from homeassistant.helpers.entity_platform import EntityPlatform
 from homeassistant.helpers.typing import StateType
+from homeassistant.loader import async_suggest_report_issue
 from homeassistant.util.hass_dict import HassKey
 
 from .const import (
@@ -40,6 +48,8 @@ from .const import (
     LOGGER,
     SourceType,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 DATA_COMPONENT: HassKey[EntityComponent[BaseTrackerEntity]] = HassKey(DOMAIN)
 DATA_KEY: HassKey[dict[str, tuple[str, str]]] = HassKey(f"{DOMAIN}_mac")
@@ -176,11 +186,31 @@ class BaseTrackerEntity(Entity):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_source_type: SourceType
 
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Post initialisation processing."""
+        super().__init_subclass__(**kwargs)
+        if "battery_level" in cls.__dict__:
+            report_issue = async_suggest_report_issue(
+                async_get_hass_or_none(), module=cls.__module__
+            )
+            _LOGGER.warning(
+                (
+                    "%s::%s is overriding the deprecated battery_level method on "
+                    "an instance of TrackerEntity, this will be unsupported from "
+                    "Home Assistant 2027.6, please %s"
+                ),
+                cls.__module__,
+                cls.__name__,
+                report_issue,
+            )
+
     @cached_property
     def battery_level(self) -> int | None:
         """Return the battery level of the device.
 
         Percentage from 0-100.
+
+        The property is deprecated and will be removed in Home Assistant 2027.6.
         """
         return None
 
