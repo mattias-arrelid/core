@@ -1,5 +1,9 @@
 """Test DoorBird cameras."""
 
+import asyncio
+from collections.abc import AsyncIterator
+from unittest.mock import patch
+
 from freezegun.api import FrozenDateTimeFactory
 import pytest
 from pytest_homeassistant.common import MockConfigEntry
@@ -7,9 +11,12 @@ from pytest_homeassistant.common import MockConfigEntry
 from homeassistant.components.automation import DOMAIN as AUTOMATION_DOMAIN
 from homeassistant.components.camera import (
     CameraState,
+    CameraStreamMedia,
     async_get_image,
     async_get_stream_source,
 )
+from homeassistant.components.camera.backchannel import async_get_backchannel_server
+from homeassistant.components.camera.helper import get_camera_from_entity_id
 from homeassistant.components.doorbird.const import (
     CONF_EVENTS,
     DEFAULT_DOORBELL_EVENT,
@@ -34,6 +41,7 @@ LIVE_1080P_CAMERA_ENTITY_ID = "camera.mydoorbird_live_1080p"
 LAST_RING_CAMERA_ENTITY_ID = "camera.mydoorbird_last_ring"
 LAST_MOTION_CAMERA_ENTITY_ID = "camera.mydoorbird_last_motion"
 LAST_RING_ISSUE_ID = "deprecated_camera_1234ABCD_last_ring"
+_TRANSMIT_URL = "http://user:pass@127.0.0.1/bha-api/audio-transmit.cgi"
 
 
 def create_stale_issue(hass: HomeAssistant, issue_id: str) -> None:
@@ -91,6 +99,110 @@ async def test_live_1080p_camera_disabled_by_default(
     entry = entity_registry.async_get(LIVE_1080P_CAMERA_ENTITY_ID)
     assert entry is not None
     assert entry.disabled_by is er.RegistryEntryDisabler.INTEGRATION
+
+
+@pytest.mark.usefixtures("socket_enabled")
+async def test_live_camera_stream_sources(
+    hass: HomeAssistant,
+    doorbird_mocker: DoorbirdMockerType,
+) -> None:
+    """Test the live camera lists the audio the RTSP stream lacks."""
+    doorbird_entry = await doorbird_mocker()
+
+    camera = get_camera_from_entity_id(hass, LIVE_CAMERA_ENTITY_ID)
+    sources = await camera.async_get_stream_sources()
+    backchannel_url = await async_get_backchannel_server(hass).async_get_url(camera)
+    assert sources == {
+        doorbird_entry.api.rtsp_live_video_url: CameraStreamMedia.VIDEO,
+        doorbird_entry.api.live_audio_url: CameraStreamMedia.AUDIO,
+        backchannel_url: CameraStreamMedia.BACKCHANNEL,
+    }
+
+
+async def _audio() -> AsyncIterator[bytes]:
+    yield b"one"
+    yield b"two"
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_error", "expected_audio"),
+    [
+        pytest.param(b"", None, b"onetwo", id="accepted_without_answer"),
+        pytest.param(b"HTTP/1.0 200 OK\r\n\r\n", None, b"onetwo", id="accepted"),
+        pytest.param(
+            b"HTTP/1.0 204 No Content\r\n\r\n",
+            "talk_back_refused",
+            b"",
+            id="refused",
+        ),
+    ],
+)
+@pytest.mark.usefixtures("socket_enabled")
+async def test_live_camera_sends_backchannel_audio(
+    hass: HomeAssistant,
+    doorbird_mocker: DoorbirdMockerType,
+    answer: bytes,
+    expected_error: str | None,
+    expected_audio: bytes,
+) -> None:
+    """Test talk-back audio is posted to the speaker the way the device wants it."""
+    received = bytearray()
+    done = asyncio.Event()
+
+    async def handle(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        received.extend(await reader.readuntil(b"\r\n\r\n"))
+        writer.write(answer)
+        await writer.drain()
+        received.extend(await reader.read())
+        writer.close()
+        done.set()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    doorbird_entry = await doorbird_mocker()
+    doorbird_entry.api.live_audio_transmit_url = (
+        f"http://user:pass@127.0.0.1:{port}/bha-api/audio-transmit.cgi"
+    )
+    camera = get_camera_from_entity_id(hass, LIVE_CAMERA_ENTITY_ID)
+
+    error: str | None = None
+    try:
+        await camera.async_send_backchannel_audio(_audio())
+    except HomeAssistantError as err:
+        error = err.translation_key
+    async with asyncio.timeout(5):
+        await done.wait()
+    server.close()
+
+    assert error == expected_error
+    head, _, audio = bytes(received).partition(b"\r\n\r\n")
+    assert head.split(b"\r\n") == [
+        b"POST /bha-api/audio-transmit.cgi HTTP/1.0",
+        b"Authorization: Basic dXNlcjpwYXNz",
+        b"Content-Type: audio/basic",
+        b"Content-Length: 9999999",
+        b"Connection: Keep-Alive",
+        b"Cache-Control: no-cache",
+    ]
+    assert audio == expected_audio
+
+
+async def test_live_camera_backchannel_audio_unreachable(
+    hass: HomeAssistant,
+    doorbird_mocker: DoorbirdMockerType,
+) -> None:
+    """Test a speaker that can't be reached raises."""
+    doorbird_entry = await doorbird_mocker()
+    doorbird_entry.api.live_audio_transmit_url = _TRANSMIT_URL
+    camera = get_camera_from_entity_id(hass, LIVE_CAMERA_ENTITY_ID)
+
+    with (
+        patch("asyncio.open_connection", side_effect=OSError),
+        pytest.raises(HomeAssistantError),
+    ):
+        await camera.async_send_backchannel_audio(_audio())
 
 
 @pytest.mark.usefixtures("entity_registry_enabled_by_default")

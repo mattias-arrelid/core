@@ -2,7 +2,7 @@
 
 import asyncio
 import collections
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from functools import partial
 from random import SystemRandom
@@ -21,6 +21,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import Entity, EntityDescription
 
+from .backchannel import async_get_backchannel_server
 from .const import (
     CAMERA_STREAM_SOURCE_TIMEOUT,
     DEFAULT_CONTENT_TYPE,
@@ -28,9 +29,11 @@ from .const import (
     ENTITY_IMAGE_URL,
     MIN_STREAM_INTERVAL,
     PREVIEW_FEATURE_TWO_WAY_AUDIO,
+    CameraBackchannelCodec,
     CameraEntityFeature,
     CameraEntityStateAttribute,
     CameraState,
+    CameraStreamMedia,
     StreamType,
 )
 from .prefs import get_dynamic_camera_stream_settings
@@ -54,6 +57,14 @@ class CameraEntityCapabilities:
     """Capabilities declared by a camera entity."""
 
     two_way_audio: bool = False
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CameraStreamSource:
+    """A stream source of a camera and the media it is used for."""
+
+    key: str
+    media: CameraStreamMedia = CameraStreamMedia.VIDEO | CameraStreamMedia.AUDIO
 
 
 @dataclass(frozen=True)
@@ -143,6 +154,7 @@ class Camera(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
 
     # Entity Properties
     entity_description: CameraEntityDescription
+    _attr_backchannel_codec: CameraBackchannelCodec = CameraBackchannelCodec.PCMU
     _attr_brand: str | None = None
     _attr_camera_entity_capabilities = CameraEntityCapabilities()
     _attr_frame_interval: float = MIN_STREAM_INTERVAL
@@ -153,6 +165,7 @@ class Camera(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
     _attr_motion_detection_enabled: bool = False
     _attr_should_poll: bool = False  # No need to poll cameras
     _attr_state: None = None  # State is determined by is_on
+    _attr_stream_sources: tuple[CameraStreamSource, ...] = ()
     _attr_supported_features: CameraEntityFeature = CameraEntityFeature(0)
 
     __supports_stream: CameraEntityFeature | None = None
@@ -221,6 +234,11 @@ class Camera(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
         """Return the interval between frames of the mjpeg stream."""
         return self._attr_frame_interval
 
+    @property
+    def backchannel_codec(self) -> CameraBackchannelCodec:
+        """Return the codec the camera takes its backchannel audio in."""
+        return self._attr_backchannel_codec
+
     @cached_property
     def camera_entity_capabilities(self) -> CameraEntityCapabilities:
         """Return the capabilities declared by the camera entity."""
@@ -269,7 +287,66 @@ class Camera(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
         This is used by cameras with CameraEntityFeature.STREAM
         and StreamType.HLS.
         """
+        for source in self._attr_stream_sources:
+            if CameraStreamMedia.VIDEO in source.media:
+                return await self.async_stream_source_url(source.key)
         return None
+
+    async def async_stream_source_url(self, key: str) -> str | None:
+        """Return the URL of a listed stream source."""
+        return None
+
+    @final
+    async def async_get_stream_sources(
+        self,
+        media: CameraStreamMedia = CameraStreamMedia.VIDEO
+        | CameraStreamMedia.AUDIO
+        | CameraStreamMedia.BACKCHANNEL,
+    ) -> dict[str, CameraStreamMedia]:
+        """Return the URLs to read the media from, and what to take from each.
+
+        Each kind of media comes from the first source that has it.
+        """
+        if not self.camera_entity_capabilities.two_way_audio:
+            media &= ~CameraStreamMedia.BACKCHANNEL
+        sources: dict[str, CameraStreamMedia] = {}
+        if self._attr_stream_sources:
+            for source in self._attr_stream_sources:
+                if not (used := source.media & media):
+                    continue
+                if url := await self.async_stream_source_url(source.key):
+                    sources[url] = sources.get(url, CameraStreamMedia(0)) | used
+                    media &= ~used
+        elif url := await self.stream_source():
+            if self._sends_backchannel_audio:
+                sources[url] = media & ~CameraStreamMedia.BACKCHANNEL
+            else:
+                sources[url] = media
+                media = CameraStreamMedia(0)
+        if (
+            sources
+            and CameraStreamMedia.BACKCHANNEL in media
+            and self._sends_backchannel_audio
+        ):
+            server = async_get_backchannel_server(self.hass)
+            sources[await server.async_get_url(self)] = CameraStreamMedia.BACKCHANNEL
+        return sources
+
+    @property
+    def _sends_backchannel_audio(self) -> bool:
+        """Return if the camera sends the backchannel audio itself."""
+        return (
+            type(self).async_send_backchannel_audio
+            is not Camera.async_send_backchannel_audio
+        )
+
+    async def async_send_backchannel_audio(self, audio: AsyncIterator[bytes]) -> None:
+        """Send backchannel audio to the device.
+
+        For devices that take talk-back over an API of their own.
+        Each item is one packet of audio in the camera's backchannel codec.
+        """
+        raise NotImplementedError
 
     async def async_handle_async_webrtc_offer(
         self, offer_sdp: str, session_id: str, send_message: WebRTCSendMessage
@@ -426,6 +503,7 @@ class Camera(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
                 self.entity_id,
             )
             self._webrtc_provider = None
+        async_get_backchannel_server(self.hass).async_remove(self)
         await super().async_internal_will_remove_from_hass()
 
     async def async_refresh_providers(self, *, write_state: bool = True) -> None:

@@ -25,6 +25,7 @@ from webrtc_models import RTCIceCandidateInit
 
 from homeassistant.components.camera import (
     Camera,
+    CameraStreamMedia,
     CameraWebRTCProvider,
     WebRTCAnswer as HAWebRTCAnswer,
     WebRTCCandidate as HAWebRTCCandidate,
@@ -403,9 +404,20 @@ class WebRTCProvider(CameraWebRTCProvider):
 
     async def _update_stream_source(self, camera: Camera) -> None:
         """Update the stream source in go2rtc config if needed."""
-        if not (stream_source := await camera.stream_source()):
+        sources = await camera.async_get_stream_sources()
+        stream_source = next(
+            (url for url, media in sources.items() if CameraStreamMedia.VIDEO in media),
+            None,
+        )
+        if not stream_source:
             await self._close_camera_sessions(camera)
             raise HomeAssistantError("Camera has no stream source")
+        # go2rtc takes each kind of media from the first source that has it
+        other_sources = [
+            url
+            for url in sources
+            if url != stream_source and self.async_is_supported(url)
+        ]
 
         if camera.platform.platform_name == "generic":
             # This is a workaround to use ffmpeg for generic cameras
@@ -446,13 +458,14 @@ class WebRTCProvider(CameraWebRTCProvider):
         streams = await self._rest_client.streams.list()
         identifier = get_camera_identifier(camera)
 
-        if (stream := streams.get(identifier)) is None or not any(
-            stream_source == producer.url for producer in stream.producers
-        ):
+        if (stream := streams.get(identifier)) is None or not {
+            producer.url for producer in stream.producers
+        }.issuperset([stream_source, *other_sources]):
             await self._rest_client.streams.add(
                 identifier,
                 [
                     stream_source,
+                    *other_sources,
                     # We are setting any ffmpeg rtsp related logs to debug
                     # Connection problems to the camera will be
                     # logged by the first stream

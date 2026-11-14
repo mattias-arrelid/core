@@ -54,11 +54,13 @@ from .const import (
     SERVICE_PLAY_STREAM,
     SERVICE_RECORD,
     SERVICE_SNAPSHOT,
+    CameraBackchannelCodec,
     CameraEntityFeature,
     CameraEntityStateAttribute,
     CameraService,
     CameraServiceArgument,
     CameraState,
+    CameraStreamMedia,
     StreamType,
 )
 from .entity import (
@@ -66,6 +68,7 @@ from .entity import (
     CameraCapabilities,
     CameraEntityCapabilities,
     CameraEntityDescription,
+    CameraStreamSource,
     async_get_still_stream,
 )
 from .helper import (
@@ -127,6 +130,7 @@ __all__ = [
     "SERVICE_TURN_ON",
     "TOKEN_CHANGE_INTERVAL",
     "Camera",
+    "CameraBackchannelCodec",
     "CameraCapabilities",
     "CameraEntityCapabilities",
     "CameraEntityDescription",
@@ -136,6 +140,8 @@ __all__ = [
     "CameraService",
     "CameraServiceArgument",
     "CameraState",
+    "CameraStreamMedia",
+    "CameraStreamSource",
     "CameraView",
     "CameraWebRTCProvider",
     "DynamicStreamSettings",

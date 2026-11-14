@@ -7,7 +7,7 @@ from http import HTTPStatus
 import logging
 from pathlib import Path
 from typing import NamedTuple
-from unittest.mock import ANY, AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, call, patch
 
 from aiohttp import UnixConnector, encode_basic_auth
 from aiohttp.client_exceptions import ClientConnectionError, ServerConnectionError
@@ -35,9 +35,12 @@ from webrtc_models import RTCIceCandidateInit
 from homeassistant.components.camera import (
     DATA_CAMERA_PREFS,
     DOMAIN as CAMERA_DOMAIN,
+    CameraEntityCapabilities,
     CameraPreferences,
     CameraService,
     CameraServiceArgument,
+    CameraStreamMedia,
+    CameraStreamSource,
     DynamicStreamSettings,
     StreamType,
     WebRTCAnswer as HAWebRTCAnswer,
@@ -1142,6 +1145,112 @@ async def test_generic_workaround(
                 f"ffmpeg:{identifier}#audio=opus#query=log_level=debug",
             ],
         )
+
+
+_SOURCE_URLS = {
+    "video": "rtsp://camera/video",
+    "audio": "http://camera/audio",
+    "talk": "rtsp://camera/talk",
+    "unsupported": "unsupported://camera/audio",
+}
+_VIDEO_ONLY = CameraStreamSource(key="video", media=CameraStreamMedia.VIDEO)
+_AUDIO = CameraStreamSource(key="audio", media=CameraStreamMedia.AUDIO)
+_TALK = CameraStreamSource(key="talk", media=CameraStreamMedia.BACKCHANNEL)
+
+
+@pytest.mark.parametrize(
+    ("stream_sources", "two_way_audio", "registered", "expected_sources"),
+    [
+        pytest.param(
+            (_VIDEO_ONLY, _AUDIO),
+            False,
+            [],
+            ["rtsp://camera/video", "http://camera/audio"],
+            id="audio",
+        ),
+        pytest.param(
+            (CameraStreamSource(key="video"), _TALK),
+            True,
+            [],
+            ["rtsp://camera/video", "rtsp://camera/talk"],
+            id="backchannel",
+        ),
+        pytest.param(
+            (CameraStreamSource(key="video"), _TALK),
+            False,
+            [],
+            ["rtsp://camera/video"],
+            id="backchannel_without_two_way_audio",
+        ),
+        pytest.param(
+            (_VIDEO_ONLY, _AUDIO, _TALK),
+            True,
+            ["rtsp://camera/video"],
+            ["rtsp://camera/video", "http://camera/audio", "rtsp://camera/talk"],
+            id="added_to_registered_stream",
+        ),
+        pytest.param(
+            (
+                _VIDEO_ONLY,
+                CameraStreamSource(key="unsupported", media=CameraStreamMedia.AUDIO),
+            ),
+            False,
+            [],
+            ["rtsp://camera/video"],
+            id="unsupported_scheme_skipped",
+        ),
+        pytest.param(
+            (_VIDEO_ONLY, _AUDIO, _TALK),
+            True,
+            ["rtsp://camera/video", "http://camera/audio", "rtsp://camera/talk"],
+            None,
+            id="already_registered",
+        ),
+    ],
+)
+@pytest.mark.usefixtures("init_integration")
+async def test_listed_stream_sources(
+    hass: HomeAssistant,
+    init_test_integration: MockCamera,
+    rest_client: AsyncMock,
+    stream_sources: tuple[CameraStreamSource, ...],
+    two_way_audio: bool,
+    registered: list[str],
+    expected_sources: list[str] | None,
+) -> None:
+    """Test the sources a camera lists make up its stream."""
+    camera = init_test_integration
+    camera._attr_stream_sources = stream_sources
+    camera._attr_camera_entity_capabilities = CameraEntityCapabilities(
+        two_way_audio=two_way_audio
+    )
+    identifier = get_camera_identifier(camera)
+    rest_client.streams.list.return_value = {
+        identifier: Stream([Producer(url) for url in registered])
+    }
+    rest_client.get_jpeg_snapshot.return_value = load_fixture_bytes(
+        "snapshot.jpg", DOMAIN
+    )
+
+    with patch.object(
+        camera, "async_stream_source_url", side_effect=_SOURCE_URLS.__getitem__
+    ):
+        await async_get_image(hass, camera.entity_id)
+
+    expected_calls = (
+        [
+            call(
+                identifier,
+                [
+                    *expected_sources,
+                    f"ffmpeg:{identifier}#audio=opus#query=log_level=debug",
+                ],
+            )
+        ]
+        if expected_sources
+        else []
+    )
+    assert rest_client.streams.add.call_args_list == expected_calls
 
 
 async def _test_camera_orientation(

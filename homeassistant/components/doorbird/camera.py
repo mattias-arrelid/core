@@ -1,18 +1,31 @@
 """Support for viewing the camera feed from a DoorBird video doorbell."""
 
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import suppress
 import datetime as dt
 import logging
 from typing import override
 
 import aiohttp
+from aiohttp import encode_basic_auth
+from yarl import URL
 
-from homeassistant.components.camera import Camera, CameraEntityFeature
+from homeassistant.components.camera import (
+    Camera,
+    CameraEntityCapabilities,
+    CameraEntityFeature,
+    CameraStreamMedia,
+    CameraStreamSource,
+)
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.util import dt as dt_util
 
+from .const import DOMAIN
 from .deprecation import async_should_create_deprecated_entity
 from .entity import DoorBirdEntity
 from .models import DoorBirdConfigEntry, DoorBirdData
@@ -23,6 +36,7 @@ _LAST_MOTION_INTERVAL = dt.timedelta(seconds=30)
 _LIVE_INTERVAL = dt.timedelta(seconds=45)
 _LOGGER = logging.getLogger(__name__)
 _TIMEOUT = 15  # seconds
+_TALK_BACK_REFUSAL_TIMEOUT = 0.5  # seconds
 
 
 async def async_setup_entry(
@@ -102,14 +116,69 @@ class DoorBirdCamera(DoorBirdEntity, Camera):
         self._last_image: bytes | None = None
         if self._stream_url:
             self._attr_supported_features = CameraEntityFeature.STREAM
+            self._attr_camera_entity_capabilities = CameraEntityCapabilities(
+                two_way_audio=True
+            )
+            # The RTSP stream has no audio
+            self._attr_stream_sources = (
+                CameraStreamSource(key="video", media=CameraStreamMedia.VIDEO),
+                CameraStreamSource(key="audio", media=CameraStreamMedia.AUDIO),
+            )
         self._interval = interval
         self._last_update = dt.datetime.min
         self._attr_unique_id = f"{self._mac_addr}_{camera_id}"
 
     @override
-    async def stream_source(self) -> str | None:
-        """Return the stream source."""
+    async def async_stream_source_url(self, key: str) -> str | None:
+        """Return the URL of a stream source."""
+        if key == "audio":
+            return self._door_station.device.live_audio_url
         return self._stream_url
+
+    @override
+    async def async_send_backchannel_audio(self, audio: AsyncIterator[bytes]) -> None:
+        """Send talk-back audio to the speaker.
+
+        The device takes it as one HTTP/1.0 request with a made-up length,
+        and only answers when it refuses the audio.
+        """
+        url = URL(self._door_station.device.live_audio_transmit_url)
+        authorization = encode_basic_auth(url.user or "", url.password or "")
+        try:
+            reader, writer = await asyncio.open_connection(
+                url.host, url.port, ssl=url.scheme == "https"
+            )
+        except OSError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="talk_back_failed"
+            ) from err
+        try:
+            writer.write(
+                (
+                    f"POST {url.raw_path} HTTP/1.0\r\n"
+                    f"Authorization: {authorization}\r\n"
+                    "Content-Type: audio/basic\r\n"
+                    "Content-Length: 9999999\r\n"
+                    "Connection: Keep-Alive\r\n"
+                    "Cache-Control: no-cache\r\n\r\n"
+                ).encode()
+            )
+            with suppress(TimeoutError):
+                async with asyncio.timeout(_TALK_BACK_REFUSAL_TIMEOUT):
+                    status = (await reader.readline()).split()
+                if len(status) < 2 or status[1] != b"200":
+                    raise HomeAssistantError(
+                        translation_domain=DOMAIN, translation_key="talk_back_refused"
+                    )
+            async for chunk in audio:
+                writer.write(chunk)
+                await writer.drain()
+        except OSError as err:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="talk_back_failed"
+            ) from err
+        finally:
+            writer.close()
 
     @override
     async def async_camera_image(

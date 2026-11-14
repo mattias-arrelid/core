@@ -82,6 +82,22 @@ class CameraEntityFeature(IntFlag):
     STREAM = 2
 
 
+class CameraBackchannelCodec(StrEnum):
+    """Codec a camera takes its backchannel audio in."""
+
+    PCMU = "pcmu"
+    PCMA = "pcma"
+    OPUS = "opus"
+
+
+class CameraStreamMedia(IntFlag):
+    """Media a camera stream source is used for."""
+
+    VIDEO = 1
+    AUDIO = 2
+    BACKCHANNEL = 4
+
+
 class CameraService(StrEnum):
     """Store keys for camera services."""
 
