@@ -1172,7 +1172,7 @@ _TALK = CameraStreamSource(key="talk", media=CameraStreamMedia.BACKCHANNEL)
             (CameraStreamSource(key="video"), _TALK),
             True,
             [],
-            ["rtsp://camera/video", "rtsp://camera/talk"],
+            ["rtsp://camera/video#backchannel=0", "rtsp://camera/talk"],
             id="backchannel",
         ),
         pytest.param(
@@ -1186,7 +1186,11 @@ _TALK = CameraStreamSource(key="talk", media=CameraStreamMedia.BACKCHANNEL)
             (_VIDEO_ONLY, _AUDIO, _TALK),
             True,
             ["rtsp://camera/video"],
-            ["rtsp://camera/video", "http://camera/audio", "rtsp://camera/talk"],
+            [
+                "rtsp://camera/video#backchannel=0",
+                "http://camera/audio",
+                "rtsp://camera/talk",
+            ],
             id="added_to_registered_stream",
         ),
         pytest.param(
@@ -1202,7 +1206,11 @@ _TALK = CameraStreamSource(key="talk", media=CameraStreamMedia.BACKCHANNEL)
         pytest.param(
             (_VIDEO_ONLY, _AUDIO, _TALK),
             True,
-            ["rtsp://camera/video", "http://camera/audio", "rtsp://camera/talk"],
+            [
+                "rtsp://camera/video#backchannel=0",
+                "http://camera/audio",
+                "rtsp://camera/talk",
+            ],
             None,
             id="already_registered",
         ),
@@ -1220,9 +1228,8 @@ async def test_listed_stream_sources(
 ) -> None:
     """Test the sources a camera lists make up its stream."""
     camera = init_test_integration
-    camera._attr_stream_sources = stream_sources
     camera._attr_camera_entity_capabilities = CameraEntityCapabilities(
-        two_way_audio=two_way_audio
+        two_way_audio=two_way_audio, stream_sources=stream_sources
     )
     identifier = get_camera_identifier(camera)
     rest_client.streams.list.return_value = {

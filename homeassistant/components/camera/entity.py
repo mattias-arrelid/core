@@ -52,19 +52,20 @@ class CameraEntityDescription(EntityDescription, frozen_or_thawed=True):
     """A class that describes camera entities."""
 
 
-@dataclass(frozen=True, kw_only=True)
-class CameraEntityCapabilities:
-    """Capabilities declared by a camera entity."""
-
-    two_way_audio: bool = False
-
-
 @dataclass(frozen=True, kw_only=True, slots=True)
 class CameraStreamSource:
     """A stream source of a camera and the media it is used for."""
 
     key: str
     media: CameraStreamMedia = CameraStreamMedia.VIDEO | CameraStreamMedia.AUDIO
+
+
+@dataclass(frozen=True, kw_only=True)
+class CameraEntityCapabilities:
+    """Capabilities declared by a camera entity."""
+
+    two_way_audio: bool = False
+    stream_sources: tuple[CameraStreamSource, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -165,7 +166,6 @@ class Camera(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
     _attr_motion_detection_enabled: bool = False
     _attr_should_poll: bool = False  # No need to poll cameras
     _attr_state: None = None  # State is determined by is_on
-    _attr_stream_sources: tuple[CameraStreamSource, ...] = ()
     _attr_supported_features: CameraEntityFeature = CameraEntityFeature(0)
 
     __supports_stream: CameraEntityFeature | None = None
@@ -287,7 +287,7 @@ class Camera(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
         This is used by cameras with CameraEntityFeature.STREAM
         and StreamType.HLS.
         """
-        for source in self._attr_stream_sources:
+        for source in self.camera_entity_capabilities.stream_sources:
             if CameraStreamMedia.VIDEO in source.media:
                 return await self.async_stream_source_url(source.key)
         return None
@@ -310,8 +310,8 @@ class Camera(Entity, cached_properties=CACHED_PROPERTIES_WITH_ATTR_):
         if not self.camera_entity_capabilities.two_way_audio:
             media &= ~CameraStreamMedia.BACKCHANNEL
         sources: dict[str, CameraStreamMedia] = {}
-        if self._attr_stream_sources:
-            for source in self._attr_stream_sources:
+        if stream_sources := self.camera_entity_capabilities.stream_sources:
+            for source in stream_sources:
                 if not (used := source.media & media):
                     continue
                 if url := await self.async_stream_source_url(source.key):

@@ -418,6 +418,9 @@ class WebRTCProvider(CameraWebRTCProvider):
             for url in sources
             if url != stream_source and self.async_is_supported(url)
         ]
+        backchannel_elsewhere = any(
+            CameraStreamMedia.BACKCHANNEL in sources[url] for url in other_sources
+        )
 
         if camera.platform.platform_name == "generic":
             # This is a workaround to use ffmpeg for generic cameras
@@ -454,6 +457,10 @@ class WebRTCProvider(CameraWebRTCProvider):
                     stream_source += "#raw=-vf transpose=1,vflip"
                 case Orientation.ROTATE_RIGHT:
                     stream_source += "#rotate=90"
+
+        if backchannel_elsewhere and stream_source.startswith(("rtsp://", "rtsps://")):
+            # Keep go2rtc from probing the primary source for a backchannel
+            stream_source += "#backchannel=0"
 
         streams = await self._rest_client.streams.list()
         identifier = get_camera_identifier(camera)

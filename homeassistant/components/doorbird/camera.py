@@ -117,12 +117,12 @@ class DoorBirdCamera(DoorBirdEntity, Camera):
         if self._stream_url:
             self._attr_supported_features = CameraEntityFeature.STREAM
             self._attr_camera_entity_capabilities = CameraEntityCapabilities(
-                two_way_audio=True
-            )
-            # The RTSP stream has no audio
-            self._attr_stream_sources = (
-                CameraStreamSource(key="video", media=CameraStreamMedia.VIDEO),
-                CameraStreamSource(key="audio", media=CameraStreamMedia.AUDIO),
+                two_way_audio=True,
+                # The RTSP stream has no audio
+                stream_sources=(
+                    CameraStreamSource(key="video", media=CameraStreamMedia.VIDEO),
+                    CameraStreamSource(key="audio", media=CameraStreamMedia.AUDIO),
+                ),
             )
         self._interval = interval
         self._last_update = dt.datetime.min

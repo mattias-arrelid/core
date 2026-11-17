@@ -132,9 +132,8 @@ async def test_listed_stream_sources(
 ) -> None:
     """Test each kind of media comes from the first listed source that has it."""
     camera = _Camera()
-    camera._attr_stream_sources = stream_sources
     camera._attr_camera_entity_capabilities = CameraEntityCapabilities(
-        two_way_audio=two_way_audio
+        two_way_audio=two_way_audio, stream_sources=stream_sources
     )
 
     assert await camera.async_get_stream_sources(media) == expected
